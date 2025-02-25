@@ -1,0 +1,55 @@
+const fs = require("fs");
+const csvParser = require("csv-parser");
+const { v4: uuidv4 } = require("uuid");
+const Request = require("../models/Request");
+const processImages = require("../services/imageProcessor");
+
+exports.uploadFile = async (req, res) => {
+  const requestId = uuidv4();
+  const webhookUrl = req.body.webhookUrl;
+  const results = [];
+
+  fs.createReadStream(req.file.path)
+    .pipe(csvParser())
+    .on("data", (data) => {
+      // Validate required fields
+      if (!data["Product Name"] || !data["Input Image Urls"]) {
+        console.error("Skipping row: Missing required fields", data);
+        return; // Skip invalid row
+      }
+
+      // Validate URLs
+      const urls = data["Input Image Urls"].split(",").map((url) => url.trim());
+      if (!urls.every((url) => isValidUrl(url))) {
+        console.error("Skipping row: Invalid URL(s) in", data["Product Name"]);
+        return;
+      }
+
+      results.push(data);
+    })
+    .on("end", async () => {
+      if (results.length === 0) {
+        return res
+          .status(400)
+          .json({ error: "No valid product data found in CSV" });
+      }
+
+      await Request.create({
+        requestId,
+        products: results,
+        status: "processing",
+        webhookUrl,
+      });
+      processImages(requestId, results, webhookUrl);
+      res.json({ requestId });
+    });
+
+  function isValidUrl(string) {
+    try {
+      new URL(string);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+};
